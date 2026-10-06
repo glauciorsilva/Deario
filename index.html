@@ -133,7 +133,8 @@ input[type=number]:focus, input[type=text]:focus{ outline:2px solid var(--gold);
 
 .extra-row{ display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;}
 .extra-row input[type=text]{ flex:1; min-width:160px; border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-size:13px;}
-.extra-row input[type=number]{ width:70px; border:1px solid var(--line); border-radius:6px; padding:6px 8px;}
+.extra-row input[type=number], .extra-row input[data-num]{ flex:none; width:70px; min-width:0; border:1px solid var(--line); border-radius:6px; padding:6px 8px; text-align:center; font-family:'IBM Plex Mono',monospace;}
+table.grid input[data-num]{ width:56px; text-align:center; }
 .small-btn{ border:none; background:var(--paper-dark); border-radius:6px; padding:5px 9px; cursor:pointer; font-weight:700; color:var(--ink-soft); font-size:13px;}
 .small-btn.del{ color:var(--red); }
 
@@ -875,7 +876,7 @@ function renderPontoExtra() {
             <option value="sub" ${tipo === "sub" ? "selected" : ""}>−</option>
           </select>
           <input type="text" placeholder="Descrição" value="${escapeHtml(p.desc)}" data-extra-desc="${a.num}|${bim}|${idx}">
-          <input type="number" step="0.1" min="0" inputmode="decimal" value="${Math.abs(Number(p.valor) || 0)}" data-extra-valor="${a.num}|${bim}|${idx}" onfocus="this.select()">
+          <input type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" data-num data-max="99" value="${Math.abs(Number(p.valor) || 0)}" data-extra-valor="${a.num}|${bim}|${idx}" onfocus="this.select()">
           <button class="small-btn del" data-extra-del="${a.num}|${bim}|${idx}">Remover</button>
         </div>`;
       });
@@ -966,12 +967,12 @@ function renderNotas() {
     html += `<tr><td class="numcol">${a.num}</td><td class="nome">${a.nome}</td>`;
     ["b1", "b2", "b3", "b4"].forEach((bim) => {
       const n = a.notas[bim];
-      html += `<td><input type="number" min="0" max="10" step="0.1" inputmode="decimal" value="${n.teste}" data-nota="${a.num}|${bim}|teste" onfocus="this.select()"></td>`;
-      html += `<td><input type="number" min="0" max="10" step="0.1" inputmode="decimal" value="${n.trabalho}" data-nota="${a.num}|${bim}|trabalho" onfocus="this.select()"></td>`;
-      html += `<td><input type="number" min="0" max="10" step="0.1" inputmode="decimal" value="${n.prova}" data-nota="${a.num}|${bim}|prova" onfocus="this.select()"></td>`;
+      html += `<td><input type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" data-num data-max="10" value="${n.teste}" data-nota="${a.num}|${bim}|teste" onfocus="this.select()"></td>`;
+      html += `<td><input type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" data-num data-max="10" value="${n.trabalho}" data-nota="${a.num}|${bim}|trabalho" onfocus="this.select()"></td>`;
+      html += `<td><input type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" data-num data-max="10" value="${n.prova}" data-nota="${a.num}|${bim}|prova" onfocus="this.select()"></td>`;
       if (bim === "b2" || bim === "b4") {
         const rec = a.recuperacao[bim];
-        html += `<td><input type="number" min="0" max="10" step="0.1" inputmode="decimal" id="recup-${a.num}-${bim}" value="${rec === null || rec === undefined ? "" : rec}" placeholder="${mediaBimestreBruta(a, bim).toFixed(1)}" data-recup="${a.num}|${bim}" onfocus="this.select()"></td>`;
+        html += `<td><input type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" data-num data-max="10" id="recup-${a.num}-${bim}" value="${rec === null || rec === undefined ? "" : rec}" placeholder="${mediaBimestreBruta(a, bim).toFixed(1)}" data-recup="${a.num}|${bim}" onfocus="this.select()"></td>`;
       } else {
         html += `<td class="mono" id="media-${a.num}-${bim}">${mediaBimestreBruta(a, bim).toFixed(1)}</td>`;
       }
@@ -1445,6 +1446,46 @@ function baixarModeloImportacao() {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/* ======================= CAMPOS NUMÉRICOS =======================
+Todo campo de número usa type="text" + inputmode="decimal": no celular abre
+só o teclado numérico (com vírgula), e não o teclado de letras. O filtro
+abaixo roda antes dos outros eventos, aceita só dígitos e um separador
+decimal (vírgula vira ponto) e respeita o limite em data-max.
+================================================================== */
+function prepararCampoNumerico(inp) {
+  if (inp.type === "number") {
+    inp.type = "text";
+    inp.dataset.num = "";
+    if (inp.max && !inp.dataset.max) inp.dataset.max = inp.max;
+  }
+  inp.setAttribute("inputmode", "decimal");
+  inp.setAttribute("autocomplete", "off");
+  inp.setAttribute("autocorrect", "off");
+  inp.setAttribute("spellcheck", "false");
+}
+
+function filtrarValorNumerico(texto, max) {
+  let v = String(texto || "").replace(/,/g, ".").replace(/[^0-9.]/g, "");
+  const p = v.indexOf(".");
+  if (p !== -1) v = v.slice(0, p + 1) + v.slice(p + 1).replace(/\./g, "").slice(0, 2);
+  if (v.startsWith(".")) v = "0" + v;
+  if (max !== undefined && v !== "" && Number(v) > max) v = String(max);
+  return v;
+}
+
+document.addEventListener("input", (e) => {
+  const inp = e.target;
+  if (!inp || inp.tagName !== "INPUT" || !("num" in inp.dataset)) return;
+  const max = inp.dataset.max !== undefined && inp.dataset.max !== "" ? Number(inp.dataset.max) : undefined;
+  const limpo = filtrarValorNumerico(inp.value, max);
+  if (limpo !== inp.value) inp.value = limpo;
+}, true); // fase de captura: limpa o valor antes dos handlers de cada aba
+
+// Garante o teclado numérico também em campos criados depois (abas e janelas)
+new MutationObserver(() => {
+  document.querySelectorAll('input[type="number"], input[data-num]:not([inputmode])').forEach(prepararCampoNumerico);
+}).observe(document.body, { childList: true, subtree: true });
 
 /* ======================= START ======================= */
 iniciarApp();
