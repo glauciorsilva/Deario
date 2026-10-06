@@ -96,9 +96,9 @@ main{ max-width:1180px; margin:0 auto; padding:22px 20px 60px; }
   padding:3px 8px; border-radius:5px; margin-bottom:8px;
 }
 
-table.grid{ width:100%; border-collapse:collapse; font-size:12.5px; }
+table.grid{ width:100%; border-collapse:separate; border-spacing:0; border-top:1px solid var(--line); border-left:1px solid var(--line); font-size:12.5px; }
 table.grid th, table.grid td{
-  border:1px solid var(--line); padding:7px 8px; text-align:center;
+  border:solid var(--line); border-width:0 1px 1px 0; padding:7px 8px; text-align:center;
 }
 table.grid th{ background:var(--paper-dark); font-family:'IBM Plex Mono',monospace; font-weight:600; font-size:11px; color:var(--ink-soft); }
 table.grid td.nome{ text-align:left; font-weight:500; white-space:nowrap; }
@@ -148,6 +148,31 @@ footer.appfoot{ text-align:center; padding:26px 20px 40px; color:var(--ink-soft)
 .modal .row{ display:flex; gap:8px; margin-top:14px; justify-content:flex-end;}
 .hint{ font-size:12px; color:var(--ink-soft); line-height:1.5;}
 .hint a{ color:var(--red); }
+
+/* ---------- Nº e nome travados ao rolar para os lados ---------- */
+table.grid .fix-num, table.grid .fix-nome{ position:sticky; z-index:2; background:var(--white); }
+table.grid .fix-num{ left:0; width:38px; min-width:38px; max-width:38px; }
+table.grid .fix-nome{
+  left:38px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  box-shadow: 3px 0 4px -2px rgba(34,48,74,0.18); /* sombra marcando a coluna fixa */
+}
+table.grid th.fix-num, table.grid th.fix-nome{ background:var(--paper-dark); z-index:3; }
+table.grid tr:hover td.fix-num, table.grid tr:hover td.fix-nome{ background:#FBFAF4; }
+
+/* Ponto Extra: nome do aluno fica no topo enquanto o bloco dele está na tela */
+.extra-nome{
+  position:sticky; top:var(--header-h, 0px); z-index:5;
+  background:var(--white); padding:8px 0; border-bottom:1px solid var(--line);
+}
+
+@media (max-width:720px){
+  table.grid .fix-num{ width:30px; min-width:30px; max-width:30px; padding-left:3px; padding-right:3px; }
+  table.grid .fix-nome{ left:30px; max-width:120px; padding-left:5px; padding-right:5px; }
+}
+@media print{
+  table.grid .fix-num, table.grid .fix-nome{ position:static; box-shadow:none; max-width:none; }
+  .extra-nome{ position:static; }
+}
 
 /* ---------- Importação de notas ---------- */
 .modal.wide{ max-width:820px; }
@@ -715,7 +740,7 @@ function renderPresenca() {
     </div>
     <div style="overflow-x:auto;">
     <table class="grid">
-      <thead><tr><th>Nº</th><th style="text-align:left">Aluno(a)</th><th class="no-print">Ações</th>`;
+      <thead><tr><th class="fix-num">Nº</th><th class="fix-nome" style="text-align:left">Aluno(a)</th><th class="no-print">Ações</th>`;
   datas.forEach((d) => {
     html += `<th><span class="datechip">${formatarDataCurta(d)}<button data-del-data="${d}" class="no-print" title="Remover data">×</button></span></th>`;
   });
@@ -723,7 +748,7 @@ function renderPresenca() {
 
   t.alunos.forEach((a) => {
     const temObs = a.observacoes && a.observacoes.trim().length > 0;
-    html += `<tr><td class="numcol">${a.num}</td><td class="nome">${a.nome}</td>`;
+    html += `<tr><td class="numcol fix-num">${a.num}</td><td class="nome fix-nome" title="${a.nome}">${a.nome}</td>`;
     html += `<td class="no-print" style="white-space:nowrap;">
       <button class="small-btn" data-obs-aluno="${a.num}" title="Observações">${temObs ? "📝•" : "📝"}</button>
       <button class="small-btn del" data-remove-aluno="${a.num}" title="Remover aluno(a)">✕</button>
@@ -860,7 +885,7 @@ function renderPontoExtra() {
 
   t.alunos.forEach((a) => {
     html += `<div style="border-top:1px solid var(--line); padding-top:12px; margin-top:12px;">
-      <strong>${a.num}. ${a.nome}</strong>
+      <div class="extra-nome"><strong>${a.num}. ${a.nome}</strong></div>
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:14px; margin-top:10px;">`;
     ["b1", "b2", "b3", "b4"].forEach((bim) => {
       const total = somaPontosExtra(a, bim);
@@ -953,7 +978,7 @@ function renderNotas() {
     <div style="overflow-x:auto;">
     <table class="grid">
       <thead><tr>
-        <th rowspan="2">Nº</th><th rowspan="2" style="text-align:left">Aluno(a)</th>
+        <th rowspan="2" class="fix-num">Nº</th><th rowspan="2" class="fix-nome" style="text-align:left">Aluno(a)</th>
         ${["1º Bim", "2º Bim", "3º Bim", "4º Bim"].map((r) => `<th colspan="4">${r}</th>`).join("")}
         <th rowspan="2">Final</th><th rowspan="2">Situação</th>
       </tr>
@@ -964,7 +989,7 @@ function renderNotas() {
       </tr></thead><tbody>`;
 
   t.alunos.forEach((a) => {
-    html += `<tr><td class="numcol">${a.num}</td><td class="nome">${a.nome}</td>`;
+    html += `<tr><td class="numcol fix-num">${a.num}</td><td class="nome fix-nome" title="${a.nome}">${a.nome}</td>`;
     ["b1", "b2", "b3", "b4"].forEach((bim) => {
       const n = a.notas[bim];
       html += `<td><input type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" data-num data-max="10" value="${n.teste}" data-nota="${a.num}|${bim}|teste" onfocus="this.select()"></td>`;
@@ -1045,7 +1070,7 @@ function renderMapaDeNotas() {
     <div style="overflow-x:auto;">
     <table class="grid" id="mapaTable">
       <thead><tr>
-        <th>Nº</th><th style="text-align:left">Aluno(a)</th>
+        <th class="fix-num">Nº</th><th class="fix-nome" style="text-align:left">Aluno(a)</th>
         <th>1º Bim</th><th>2º Bim</th><th>3º Bim</th><th>4º Bim</th><th>Média Final</th><th>Situação</th>
       </tr></thead><tbody>`;
   t.alunos.forEach((a) => {
@@ -1053,7 +1078,7 @@ function renderMapaDeNotas() {
           b3 = mediaBimestreFinal(a, "b3"), b4 = mediaBimestreFinal(a, "b4");
     const final = mediaFinalAno(a), status = statusAluno(a);
     html += `<tr>
-      <td class="numcol">${a.num}</td><td class="nome">${a.nome}</td>
+      <td class="numcol fix-num">${a.num}</td><td class="nome fix-nome" title="${a.nome}">${a.nome}</td>
       <td class="mono">${b1.toFixed(1)}</td><td class="mono">${b2.toFixed(1)}</td>
       <td class="mono">${b3.toFixed(1)}</td><td class="mono">${b4.toFixed(1)}</td>
       <td class="mono" style="font-weight:700;">${final.toFixed(1)}</td>
@@ -1486,6 +1511,15 @@ document.addEventListener("input", (e) => {
 new MutationObserver(() => {
   document.querySelectorAll('input[type="number"], input[data-num]:not([inputmode])').forEach(prepararCampoNumerico);
 }).observe(document.body, { childList: true, subtree: true });
+
+// Altura do cabeçalho fixo, para o nome do aluno no Ponto Extra parar logo abaixo dele
+function atualizarAlturaCabecalho() {
+  const h = document.querySelector("header.app-header");
+  if (h) document.documentElement.style.setProperty("--header-h", h.offsetHeight + "px");
+}
+window.addEventListener("resize", atualizarAlturaCabecalho);
+window.addEventListener("load", atualizarAlturaCabecalho);
+atualizarAlturaCabecalho();
 
 /* ======================= START ======================= */
 iniciarApp();
