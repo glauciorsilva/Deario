@@ -148,6 +148,18 @@ footer.appfoot{ text-align:center; padding:26px 20px 40px; color:var(--ink-soft)
 .hint{ font-size:12px; color:var(--ink-soft); line-height:1.5;}
 .hint a{ color:var(--red); }
 
+/* ---------- Importação de notas ---------- */
+.modal.wide{ max-width:820px; }
+.imp-resumo{ display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+.imp-resumo .chip{ background:var(--paper-dark); border-radius:20px; padding:4px 10px; font-size:12px; font-family:'IBM Plex Mono',monospace; }
+table.grid tr.imp-alerta td{ background:rgba(184,147,61,0.12); }
+table.grid tr.imp-erro td{ background:rgba(166,50,63,0.08); color:var(--ink-soft); }
+.imp-st{ font-size:11px; font-weight:600; white-space:nowrap; }
+.imp-st.ok{ color:var(--green); }
+.imp-st.alerta{ color:#8a6a1c; }
+.imp-st.erro{ color:var(--red); }
+.imp-seta{ color:var(--ink-soft); }
+
 .stat-strip{ display:flex; gap:14px; flex-wrap:wrap; margin-bottom:14px;}
 .stat{ background:var(--paper-dark); border-radius:10px; padding:10px 16px; min-width:110px;}
 .stat .n{ font-family:'Source Serif 4',serif; font-size:22px; font-weight:700; color:var(--ink);}
@@ -179,6 +191,7 @@ footer.appfoot{ text-align:center; padding:26px 20px 40px; color:var(--ink-soft)
     <div class="header-actions">
       <select id="turmaSelect"></select>
       <button class="btn btn-outline" id="btnConfigFirebase"><span class="sync-dot" id="syncDot"></span><span id="syncLabel">Local</span></button>
+      <button class="btn btn-outline" id="btnImportarNotas">Importar notas</button>
       <button class="btn btn-gold" id="btnExportPdf">Gerar PDF</button>
     </div>
   </div>
@@ -657,6 +670,7 @@ function ligarEventosGlobais() {
   });
 
   document.getElementById("btnExportPdf").addEventListener("click", exportarPdfMapaDeNotas);
+  document.getElementById("btnImportarNotas").addEventListener("click", abrirModalImportacao);
 }
 
 function renderAll() {
@@ -1085,6 +1099,351 @@ function exportarPdfMapaDeNotas() {
   });
 
   doc.save("Mapa_de_Notas_" + t.nome.replace(/\s+/g, "_") + "_2026.pdf");
+}
+
+/* ======================= IMPORTAÇÃO DE NOTAS (JSON) =======================
+Formato aceito (um lote, uma lista de lotes, ou { "lotes": [...] }):
+{
+  "turma": "7ANO" | "7º Ano" | "7",
+  "bimestre": 3 | "b3" | "3º",
+  "avaliacao": "teste" | "trabalho" | "prova" | "recuperacao",
+  "notas": [ { "numero": 1, "nome": "ANNA PAULA ...", "nota": 8.5 }, ... ]
+}
+- O aluno é localizado pelo número da chamada; o nome serve de conferência.
+- Sem número, tenta localizar pelo nome.
+- "nota": null (ou ausente) = aluno pulado (ex.: faltou à prova).
+- Recuperação só é aceita no 2º e 4º bimestres.
+========================================================================== */
+const IMPORT_BACKUP_KEY = "isn_diario_2026_backup_importacao";
+let IMPORT_PREVIA = null; // linhas calculadas para a prévia
+
+function normalizarTexto(s) {
+  return String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function resolverTurmaId(valor) {
+  if (valor === undefined || valor === null || valor === "") return null;
+  const bruto = String(valor).trim();
+  if (STATE.turmas[bruto]) return bruto;
+  const norm = normalizarTexto(bruto);
+  for (const [id, t] of Object.entries(STATE.turmas)) {
+    if (normalizarTexto(id) === norm || normalizarTexto(t.nome) === norm) return id;
+  }
+  const dig = bruto.match(/\d+/);
+  if (dig) {
+    const candidatos = Object.keys(STATE.turmas).filter((id) => (id.match(/\d+/) || [])[0] === dig[0]);
+    if (candidatos.length === 1) return candidatos[0];
+  }
+  return null;
+}
+
+function resolverBimestre(valor) {
+  const m = String(valor === undefined || valor === null ? "" : valor).match(/[1-4]/);
+  return m ? "b" + m[0] : null;
+}
+
+function resolverAvaliacao(valor) {
+  const v = normalizarTexto(valor);
+  if (v.startsWith("TEST")) return "teste";
+  if (v.startsWith("TRAB")) return "trabalho";
+  if (v.startsWith("PROV")) return "prova";
+  if (v.startsWith("REC")) return "recuperacao";
+  return null;
+}
+
+function rotuloAvaliacao(av) {
+  return { teste: "Teste", trabalho: "Trabalho", prova: "Prova", recuperacao: "Recuperação" }[av] || av;
+}
+
+// Compara o nome do JSON com o nome do diário: "igual", "parecido" ou "diferente"
+function compararNomes(nomeJson, nomeDiario) {
+  const a = normalizarTexto(nomeJson), b = normalizarTexto(nomeDiario);
+  if (!a) return "sem-nome";
+  if (a === b) return "igual";
+  const ta = a.split(" "), tb = b.split(" ");
+  if (ta[0] !== tb[0]) return "diferente";
+  const comuns = ta.filter((x) => x.length > 2 && tb.includes(x)).length;
+  return comuns >= Math.min(2, ta.length) ? "parecido" : "diferente";
+}
+
+function extrairLotes(dados) {
+  if (Array.isArray(dados)) return dados;
+  if (dados && Array.isArray(dados.lotes)) return dados.lotes;
+  if (dados && typeof dados === "object") return [dados];
+  return [];
+}
+
+function valorAtualNota(aluno, bim, av) {
+  if (av === "recuperacao") {
+    const r = aluno.recuperacao && aluno.recuperacao[bim];
+    return r === null || r === undefined || r === "" ? null : Number(r);
+  }
+  return Number(aluno.notas[bim][av]) || 0;
+}
+
+// Monta a prévia: uma linha por nota do JSON, com status de validação
+function montarPreviaImportacao(dados) {
+  const lotes = extrairLotes(dados);
+  if (!lotes.length) throw new Error("O arquivo não contém nenhum lote de notas.");
+  const linhas = [];
+  lotes.forEach((lote, iLote) => {
+    const rotuloLote = "Lote " + (iLote + 1);
+    const turmaId = resolverTurmaId(lote.turma);
+    const bim = resolverBimestre(lote.bimestre);
+    const av = resolverAvaliacao(lote.avaliacao);
+    const notas = Array.isArray(lote.notas) ? lote.notas : [];
+    let erroLote = null;
+    if (!turmaId) erroLote = "Turma não reconhecida: " + lote.turma;
+    else if (!bim) erroLote = "Bimestre inválido: " + lote.bimestre;
+    else if (!av) erroLote = "Avaliação inválida: " + lote.avaliacao;
+    else if (av === "recuperacao" && bim !== "b2" && bim !== "b4") erroLote = "Recuperação só existe no 2º e 4º bimestres";
+    else if (!notas.length) erroLote = "Lote sem notas";
+    if (erroLote) {
+      linhas.push({ rotuloLote, erro: erroLote, status: "erro", marcado: false, numero: "—", nomeJson: "", nomeDiario: "" });
+      return;
+    }
+    const turma = STATE.turmas[turmaId];
+    const usados = new Set();
+    notas.forEach((n) => {
+      const linha = { rotuloLote, turmaId, turmaNome: turma.nome, bim, av, nomeJson: n.nome || "", numero: n.numero };
+      if (n.nota === null || n.nota === undefined || n.nota === "") {
+        Object.assign(linha, { status: "pulado", erro: "Sem nota (pulado)", marcado: false });
+        linhas.push(linha); return;
+      }
+      const nota = Number(String(n.nota).replace(",", "."));
+      if (!isFinite(nota) || nota < 0 || nota > 10) {
+        Object.assign(linha, { status: "erro", erro: "Nota inválida: " + n.nota, marcado: false });
+        linhas.push(linha); return;
+      }
+      linha.nota = Math.round(nota * 100) / 100;
+      let aluno = null;
+      if (n.numero !== undefined && n.numero !== null && n.numero !== "") {
+        aluno = turma.alunos.find((a) => a.num === Number(n.numero));
+      } else if (n.nome) {
+        const achados = turma.alunos.filter((a) => normalizarTexto(a.nome) === normalizarTexto(n.nome));
+        if (achados.length === 1) aluno = achados[0];
+      }
+      if (!aluno) {
+        Object.assign(linha, { status: "erro", erro: "Aluno não encontrado na turma", marcado: false });
+        linhas.push(linha); return;
+      }
+      linha.numero = aluno.num;
+      linha.nomeDiario = aluno.nome;
+      linha.atual = valorAtualNota(aluno, bim, av);
+      if (usados.has(aluno.num)) {
+        Object.assign(linha, { status: "erro", erro: "Aluno repetido no mesmo lote", marcado: false });
+        linhas.push(linha); return;
+      }
+      usados.add(aluno.num);
+      const cmp = compararNomes(n.nome, aluno.nome);
+      if (cmp === "diferente") Object.assign(linha, { status: "alerta", erro: "Nome não confere — verifique", marcado: false });
+      else if (cmp === "parecido") Object.assign(linha, { status: "alerta", erro: "Nome parecido", marcado: true });
+      else Object.assign(linha, { status: "ok", erro: cmp === "sem-nome" ? "OK (sem nome p/ conferir)" : "OK", marcado: true });
+      linhas.push(linha);
+    });
+  });
+  return linhas;
+}
+
+function abrirModalImportacao() {
+  let overlay = document.getElementById("modalImportOverlay");
+  if (overlay) overlay.remove();
+  overlay = document.createElement("div");
+  overlay.className = "modal-bg open";
+  overlay.id = "modalImportOverlay";
+  const temBackup = !!localStorage.getItem(IMPORT_BACKUP_KEY);
+  overlay.innerHTML = `
+    <div class="modal wide">
+      <h3>Importar notas (JSON)</h3>
+      <p class="hint">Escolha o arquivo <span class="mono">.json</span> gerado a partir da correção das provas, ou cole o conteúdo abaixo. Nada é gravado antes de você conferir a prévia e confirmar. Os alunos são localizados pelo <strong>número da chamada</strong> e o nome é usado para conferência.</p>
+      <div class="toolbar" style="margin-top:10px;">
+        <input type="file" id="impArquivo" accept=".json,application/json">
+        <button class="btn btn-outline" id="impModelo" style="color:#22304A;border-color:#22304A">Baixar modelo da turma atual</button>
+        ${temBackup ? `<button class="btn btn-outline" id="impDesfazer" style="color:#A6323F;border-color:#A6323F">Desfazer última importação</button>` : ""}
+      </div>
+      <textarea id="impTexto" placeholder='{ "turma": "7ANO", "bimestre": 3, "avaliacao": "prova", "notas": [ { "numero": 1, "nome": "...", "nota": 8.5 } ] }'></textarea>
+      <div class="row" style="justify-content:flex-start;margin-top:8px;">
+        <button class="btn btn-gold" id="impPrevia">Ver prévia</button>
+      </div>
+      <div id="impPreviaArea"></div>
+      <div class="row">
+        <button class="btn btn-outline" id="impFechar" style="color:#22304A;border-color:#22304A">Fechar</button>
+        <button class="btn btn-green" id="impConfirmar" disabled>Confirmar importação</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  IMPORT_PREVIA = null;
+
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  document.getElementById("impFechar").addEventListener("click", () => overlay.remove());
+  document.getElementById("impArquivo").addEventListener("change", (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    const leitor = new FileReader();
+    leitor.onload = () => {
+      document.getElementById("impTexto").value = leitor.result;
+      gerarPreviaImportacao();
+    };
+    leitor.readAsText(f, "utf-8");
+  });
+  document.getElementById("impPrevia").addEventListener("click", gerarPreviaImportacao);
+  document.getElementById("impConfirmar").addEventListener("click", confirmarImportacao);
+  document.getElementById("impModelo").addEventListener("click", baixarModeloImportacao);
+  const btnDesfazer = document.getElementById("impDesfazer");
+  if (btnDesfazer) btnDesfazer.addEventListener("click", desfazerUltimaImportacao);
+}
+
+function gerarPreviaImportacao() {
+  const area = document.getElementById("impPreviaArea");
+  const btnConf = document.getElementById("impConfirmar");
+  btnConf.disabled = true;
+  IMPORT_PREVIA = null;
+  const txt = document.getElementById("impTexto").value.trim();
+  if (!txt) { area.innerHTML = `<p class="hint" style="color:var(--red)">Escolha um arquivo ou cole o JSON.</p>`; return; }
+  let dados;
+  try { dados = JSON.parse(txt); }
+  catch (e) { area.innerHTML = `<p class="hint" style="color:var(--red)">JSON inválido: ${escapeHtml(e.message)}</p>`; return; }
+  try { IMPORT_PREVIA = montarPreviaImportacao(dados); }
+  catch (e) { area.innerHTML = `<p class="hint" style="color:var(--red)">${escapeHtml(e.message)}</p>`; return; }
+  renderPreviaImportacao();
+}
+
+function renderPreviaImportacao() {
+  const area = document.getElementById("impPreviaArea");
+  const linhas = IMPORT_PREVIA || [];
+  const cont = { ok: 0, alerta: 0, erro: 0, pulado: 0 };
+  linhas.forEach((l) => { cont[l.status] = (cont[l.status] || 0) + 1; });
+  const marcadas = linhas.filter((l) => l.marcado).length;
+
+  let html = `<div class="imp-resumo">
+    <span class="chip">${linhas.length} linhas</span>
+    <span class="chip" style="color:var(--green)">${cont.ok} ok</span>
+    <span class="chip" style="color:#8a6a1c">${cont.alerta} p/ conferir</span>
+    <span class="chip" style="color:var(--red)">${cont.erro} com erro</span>
+    ${cont.pulado ? `<span class="chip">${cont.pulado} sem nota</span>` : ""}
+  </div>
+  <div style="overflow-x:auto;max-height:45vh;">
+  <table class="grid"><thead><tr>
+    <th>✔</th><th>Turma / Bim / Avaliação</th><th>Nº</th><th style="text-align:left">Aluno(a) no diário</th><th style="text-align:left">Nome no JSON</th><th>Atual → Nova</th><th>Status</th>
+  </tr></thead><tbody>`;
+  linhas.forEach((l, i) => {
+    const cls = l.status === "alerta" ? "imp-alerta" : (l.status === "erro" || l.status === "pulado") ? "imp-erro" : "";
+    const podeMarcar = l.status === "ok" || l.status === "alerta";
+    const contexto = l.turmaNome ? `${l.turmaNome} · ${rotuloBimestre(l.bim)} · ${rotuloAvaliacao(l.av)}` : l.rotuloLote;
+    const atualTxt = l.atual === null || l.atual === undefined ? "—" : Number(l.atual).toFixed(1);
+    const notaTxt = l.nota === undefined ? "—" : l.nota.toFixed(1);
+    html += `<tr class="${cls}">
+      <td>${podeMarcar ? `<input type="checkbox" data-imp-idx="${i}" ${l.marcado ? "checked" : ""}>` : ""}</td>
+      <td style="font-size:11px;white-space:nowrap;">${escapeHtml(contexto)}</td>
+      <td class="numcol">${escapeHtml(l.numero === undefined ? "—" : l.numero)}</td>
+      <td class="nome">${escapeHtml(l.nomeDiario || "—")}</td>
+      <td class="nome" style="color:var(--ink-soft)">${escapeHtml(l.nomeJson || "—")}</td>
+      <td class="mono">${atualTxt} <span class="imp-seta">→</span> <strong>${notaTxt}</strong></td>
+      <td><span class="imp-st ${l.status === "pulado" ? "erro" : l.status}">${escapeHtml(l.erro || "")}</span></td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+  <p class="hint" style="margin-top:8px;">Linhas amarelas precisam de conferência: marque a caixa só se o aluno estiver certo. Linhas com erro não serão importadas.</p>`;
+  area.innerHTML = html;
+
+  area.querySelectorAll("[data-imp-idx]").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      IMPORT_PREVIA[Number(cb.dataset.impIdx)].marcado = cb.checked;
+      atualizarBotaoConfirmar();
+    });
+  });
+  atualizarBotaoConfirmar(marcadas);
+}
+
+function atualizarBotaoConfirmar(qtd) {
+  const n = qtd !== undefined ? qtd : (IMPORT_PREVIA || []).filter((l) => l.marcado).length;
+  const btn = document.getElementById("impConfirmar");
+  btn.disabled = n === 0;
+  btn.textContent = n ? "Confirmar importação (" + n + ")" : "Confirmar importação";
+}
+
+function aplicarLinhasNoEstado(estado, linhas) {
+  let aplicadas = 0;
+  linhas.forEach((l) => {
+    const turma = estado.turmas[l.turmaId];
+    if (!turma) return;
+    // relocaliza pelo nome do diário (o estado pode ter sido atualizado de outro aparelho)
+    const aluno = turma.alunos.find((a) => normalizarTexto(a.nome) === normalizarTexto(l.nomeDiario)) ||
+                  turma.alunos.find((a) => a.num === l.numero);
+    if (!aluno) return;
+    if (l.av === "recuperacao") {
+      aluno.recuperacao = aluno.recuperacao || { b2: null, b4: null };
+      aluno.recuperacao[l.bim] = l.nota;
+    } else {
+      aluno.notas[l.bim][l.av] = l.nota;
+    }
+    aplicadas++;
+  });
+  return aplicadas;
+}
+
+function confirmarImportacao() {
+  const linhas = (IMPORT_PREVIA || []).filter((l) => l.marcado);
+  if (!linhas.length) return;
+  if (!confirm("Gravar " + linhas.length + " nota(s) no diário?")) return;
+  const btn = document.getElementById("impConfirmar");
+  btn.disabled = true; btn.textContent = "Gravando...";
+
+  // Busca a versão mais recente do Firebase antes de aplicar, para não
+  // sobrescrever alterações feitas em outro aparelho.
+  const buscarRemoto = FB_CFG_ATIVA ? firestoreGet(FB_CFG_ATIVA).catch(() => null) : Promise.resolve(null);
+  buscarRemoto.then((remoto) => {
+    if (remoto && remoto.turmas) STATE = remoto;
+    localStorage.setItem(IMPORT_BACKUP_KEY, JSON.stringify({ quando: new Date().toISOString(), estado: STATE }));
+    const aplicadas = aplicarLinhasNoEstado(STATE, linhas);
+    agendarSalvamento();
+    const turmaIds = Array.from(new Set(linhas.map((l) => l.turmaId)));
+    if (turmaIds.length === 1) TURMA_ATUAL = turmaIds[0];
+    ABA_ATUAL = "notas";
+    document.querySelectorAll("#tabsNav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === "notas"));
+    renderTurmaSelect();
+    renderAll();
+    const overlay = document.getElementById("modalImportOverlay");
+    if (overlay) overlay.remove();
+    alert(aplicadas + " nota(s) importada(s) com sucesso. Se algo estiver errado, use \"Importar notas → Desfazer última importação\".");
+  });
+}
+
+function desfazerUltimaImportacao() {
+  const raw = localStorage.getItem(IMPORT_BACKUP_KEY);
+  if (!raw) return;
+  let bkp;
+  try { bkp = JSON.parse(raw); } catch (e) { alert("Backup corrompido."); return; }
+  const quando = new Date(bkp.quando).toLocaleString("pt-BR");
+  if (!confirm("Voltar o diário ao estado de antes da importação de " + quando + "?\n\nAtenção: qualquer alteração feita depois disso também será desfeita.")) return;
+  STATE = bkp.estado;
+  localStorage.removeItem(IMPORT_BACKUP_KEY);
+  agendarSalvamento();
+  renderTurmaSelect();
+  renderAll();
+  const overlay = document.getElementById("modalImportOverlay");
+  if (overlay) overlay.remove();
+  alert("Importação desfeita.");
+}
+
+function baixarModeloImportacao() {
+  const t = turmaAtual();
+  const modelo = {
+    turma: TURMA_ATUAL,
+    bimestre: 1,
+    avaliacao: "prova",
+    notas: t.alunos.map((a) => ({ numero: a.num, nome: a.nome, nota: null }))
+  };
+  const blob = new Blob([JSON.stringify(modelo, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "modelo_notas_" + TURMA_ATUAL + ".json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /* ======================= START ======================= */

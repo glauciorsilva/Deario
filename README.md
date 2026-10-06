@@ -14,6 +14,31 @@ Sistema de diário de classe digital para o Prof. Glaucio Rafael, com:
 Abra o arquivo `index.html` em qualquer navegador. Não precisa de instalação, servidor ou build —
 é um sistema estático de um único arquivo.
 
+## Importar notas (JSON)
+
+Botão **Importar notas** no topo. Escolha o arquivo `.json` (ou cole o conteúdo), confira a
+prévia e confirme. Nada é gravado sem confirmação, e a última importação pode ser desfeita.
+
+```json
+{
+  "turma": "7ANO",
+  "bimestre": 3,
+  "avaliacao": "prova",
+  "notas": [
+    { "numero": 1, "nome": "ANNA PAULA FELISBINO VIEIRA DOS SANTOS", "nota": 8.5 },
+    { "numero": 2, "nome": "DAVI RIBEIRO CASTILHO DE ASSIS", "nota": null }
+  ]
+}
+```
+
+- `turma`: `6ANO`, `7ANO`, `8ANO`, `9ANO` (também aceita "7º Ano" ou "7")
+- `bimestre`: 1 a 4
+- `avaliacao`: `teste`, `trabalho`, `prova` ou `recuperacao` (só 2º e 4º bimestres)
+- `numero`: número da chamada (o aluno é localizado por ele; o nome serve de conferência)
+- `nota`: 0 a 10; `null` pula o aluno (ex.: faltou)
+- Vários lotes de uma vez: envie uma lista `[ {...}, {...} ]`
+- O botão **Baixar modelo da turma atual** gera o arquivo já com todos os alunos e números.
+
 ## Turmas incluídas
 
 - 6º Ano (26 alunos)
